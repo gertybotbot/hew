@@ -2,13 +2,19 @@ fn main() {
     let s = "Hello";
     println(s.slice(1, 3));
     println("aba".replace("a", "x"));
-    println("banana".find("na"));
+    match "banana".find("na") {
+        Some(i) => println(i),
+        None => println(-1),
+    }
     let parts = "a,b,c".split(",");
     println(parts.len());
     let ls = "x\ny".lines();
     println(ls.len());
     println("ha".repeat(3));
-    println("abc".char_at(1));
+    match "abc".char_at(1) {
+        Some(c) => println(c as i64),
+        None => println(-1),
+    }
     let cs = "Hi".chars();
     println(cs.len());
     println("123".is_digit());
