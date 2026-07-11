@@ -118,6 +118,10 @@ pub fn try_parse(s: string) -> Result<Version, string> {
         version_part = main_part.slice(0, dash_idx);
         pre = main_part.slice(dash_idx + 1, main_part.len());
     }
+    // A separator must be followed by at least one identifier.
+    if (plus_idx >= 0 && build.len() == 0) || (dash_idx >= 0 && pre.len() == 0) {
+        return Err(f"semver: invalid version string: {s}");
+    }
     // Split major.minor.patch
     let first_dot = version_part.find(".");
     if first_dot < 0 {
@@ -131,10 +135,88 @@ pub fn try_parse(s: string) -> Result<Version, string> {
     }
     let minor_str = rest.slice(0, second_dot);
     let patch_str = rest.slice(second_dot + 1, rest.len());
+    if !is_strict_numeric_identifier(major_str)
+        || !is_strict_numeric_identifier(minor_str)
+        || !is_strict_numeric_identifier(patch_str)
+        || !valid_identifier_list(pre, false)
+        || !valid_identifier_list(build, true) {
+        return Err(f"semver: invalid version string: {s}");
+    }
     let major = string.to_int(major_str);
     let minor = string.to_int(minor_str);
     let patch = string.to_int(patch_str);
     Ok(Version { pre_release: pre, build_meta: build, maj: major, min: minor, pat: patch })
+}
+
+/// Return true when `s` is a canonical non-negative numeric SemVer identifier.
+fn is_strict_numeric_identifier(s: string) -> bool {
+    if !string.is_numeric(s) {
+        return false;
+    }
+    s.len() == 1 || !s.starts_with("0")
+}
+
+/// Return true when an identifier contains only ASCII letters, digits, or `-`.
+fn is_ascii_alnum_or_hyphen(s: string) -> bool {
+    if !string.is_ascii(s) || s.len() == 0 {
+        return false;
+    }
+    for i in 0 .. s.len() {
+        let ch = s.slice(i, i + 1);
+        if !(ch == "-"
+            || (ch >= "0" && ch <= "9")
+            || (ch >= "a" && ch <= "z")
+            || (ch >= "A" && ch <= "Z")) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Validate dot-separated pre-release or build identifiers.
+/// Numeric pre-release identifiers cannot have leading zeroes; build identifiers can.
+fn valid_identifier_list(s: string, allow_numeric_leading_zero: bool) -> bool {
+    if s.len() == 0 {
+        return true;
+    }
+    var pos = 0;
+    while pos <= s.len() {
+        let remaining = s.slice(pos, s.len());
+        let dot = remaining.find(".");
+        var end = s.len();
+        if dot >= 0 {
+            end = pos + dot;
+        }
+        let identifier = s.slice(pos, end);
+        if !is_ascii_alnum_or_hyphen(identifier) {
+            return false;
+        }
+        if !allow_numeric_leading_zero
+            && string.is_numeric(identifier)
+            && !is_strict_numeric_identifier(identifier) {
+            return false;
+        }
+        if dot < 0 {
+            return true;
+        }
+        pos = end + 1;
+    }
+    true
+}
+
+/// Return the next major version, resetting minor/patch and dropping metadata.
+pub fn increment_major(v: Version) -> Version {
+    Version { pre_release: "", build_meta: "", maj: v.maj + 1, min: 0, pat: 0 }
+}
+
+/// Return the next minor version, resetting patch and dropping metadata.
+pub fn increment_minor(v: Version) -> Version {
+    Version { pre_release: "", build_meta: "", maj: v.maj, min: v.min + 1, pat: 0 }
+}
+
+/// Return the next patch version, dropping metadata.
+pub fn increment_patch(v: Version) -> Version {
+    Version { pre_release: "", build_meta: "", maj: v.maj, min: v.min, pat: v.pat + 1 }
 }
 
 /// Parse a semantic version string.
@@ -374,7 +456,15 @@ fn matches_single(v: Version, constraint: string) -> bool {
         if cmp < 0 {
             return false;
         }
-        return v.maj == req_ver.maj;
+        // Caret ranges advance the left-most non-zero component.
+        // ^1.2.3 <2.0.0, ^0.2.3 <0.3.0, ^0.0.3 <0.0.4.
+        if req_ver.maj > 0 {
+            return v.maj == req_ver.maj;
+        }
+        if req_ver.min > 0 {
+            return v.maj == 0 && v.min == req_ver.min;
+        }
+        return v.maj == 0 && v.min == 0 && v.pat == req_ver.pat;
     }
     if op == "~" {
         if cmp < 0 {
