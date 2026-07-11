@@ -238,11 +238,32 @@ fn assert_invalid_semver(s: string) {
     }
 }
 
+fn assert_increment_ok(actual: Result<semver.Version, string>, expected: string) {
+    match actual {
+        Ok(value) => testing.assert_eq_str(value.to_string(), expected),
+        Err(message) => panic(message),
+    }
+}
+
+fn assert_increment_err(actual: Result<semver.Version, string>, expected: string) {
+    match actual {
+        Ok(value) => panic(f"expected increment error: {value.to_string()}"),
+        Err(message) => testing.assert_eq_str(message, expected),
+    }
+}
+
 #[test]
 fn test_try_parse_rejects_leading_zero_core_identifiers() {
     assert_invalid_semver("01.2.3");
     assert_invalid_semver("1.02.3");
     assert_invalid_semver("1.2.03");
+}
+
+#[test]
+fn test_try_parse_rejects_out_of_range_core_identifiers() {
+    assert_invalid_semver("9223372036854775808.0.0");
+    assert_invalid_semver("0.9223372036854775808.0");
+    assert_invalid_semver("0.0.9223372036854775808");
 }
 
 #[test]
@@ -282,6 +303,12 @@ fn test_try_parse_rejects_leading_zero_numeric_prerelease_identifiers() {
 }
 
 #[test]
+fn test_try_parse_rejects_out_of_range_numeric_prerelease_identifiers() {
+    assert_invalid_semver("1.0.0-9223372036854775808");
+    assert_invalid_semver("1.0.0-rc.9223372036854775808");
+}
+
+#[test]
 fn test_try_parse_accepts_canonical_build_numeric_leading_zero() {
     let v = semver.parse("1.2.3-rc.1+build.001");
     testing.assert_eq_str(v.to_string(), "1.2.3-rc.1+build.001");
@@ -305,7 +332,17 @@ fn test_matches_caret_zero_zero_stops_before_next_patch() {
 #[test]
 fn test_increment_helpers_reset_lower_components_and_metadata() {
     let v = semver.parse("1.2.3-rc.1+build.5");
-    testing.assert_eq_str(semver.increment_major(v).to_string(), "2.0.0");
-    testing.assert_eq_str(semver.increment_minor(v).to_string(), "1.3.0");
-    testing.assert_eq_str(semver.increment_patch(v).to_string(), "1.2.4");
+    assert_increment_ok(semver.increment_major(v), "2.0.0");
+    assert_increment_ok(semver.increment_minor(v), "1.3.0");
+    assert_increment_ok(semver.increment_patch(v), "1.2.4");
+}
+
+#[test]
+fn test_increment_helpers_return_err_at_i64_max() {
+    let major_max = semver.parse("9223372036854775807.0.0");
+    let minor_max = semver.parse("0.9223372036854775807.0");
+    let patch_max = semver.parse("0.0.9223372036854775807");
+    assert_increment_err(semver.increment_major(major_max), "semver: major component out of range");
+    assert_increment_err(semver.increment_minor(minor_max), "semver: minor component out of range");
+    assert_increment_err(semver.increment_patch(patch_max), "semver: patch component out of range");
 }
