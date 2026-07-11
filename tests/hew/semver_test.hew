@@ -228,3 +228,84 @@ fn test_parse_panics_on_missing_second_dot() {
     // "1.2" has a first dot but no second — hits the `second_dot < 0` panic branch.
     semver.parse("1.2");
 }
+
+// ── strict SemVer 2.0.0 grammar ───────────────────────────────────────
+
+fn assert_invalid_semver(s: string) {
+    match semver.try_parse(s) {
+        Ok(_) => panic(f"expected invalid semver: {s}"),
+        Err(_) => {},
+    }
+}
+
+#[test]
+fn test_try_parse_rejects_leading_zero_core_identifiers() {
+    assert_invalid_semver("01.2.3");
+    assert_invalid_semver("1.02.3");
+    assert_invalid_semver("1.2.03");
+}
+
+#[test]
+fn test_try_parse_rejects_empty_pre_release_and_build_tails() {
+    assert_invalid_semver("1.2.3-");
+    assert_invalid_semver("1.2.3+");
+}
+
+#[test]
+fn test_try_parse_rejects_empty_pre_release_and_build_identifiers() {
+    assert_invalid_semver("1.2.3-alpha.");
+    assert_invalid_semver("1.2.3-.alpha");
+    assert_invalid_semver("1.2.3+build.");
+    assert_invalid_semver("1.2.3+.build");
+}
+
+#[test]
+fn test_try_parse_rejects_non_ascii_identifiers() {
+    assert_invalid_semver("1.2.3-café");
+    assert_invalid_semver("1.2.3+naïve");
+}
+
+#[test]
+fn test_try_parse_rejects_non_numeric_signed_and_extra_core_text() {
+    assert_invalid_semver("-1.2.3");
+    assert_invalid_semver("1.-2.3");
+    assert_invalid_semver("1.2.-3");
+    assert_invalid_semver("1.2.x");
+    assert_invalid_semver("1.2.3x");
+    assert_invalid_semver("1.2.3.4");
+}
+
+#[test]
+fn test_try_parse_rejects_leading_zero_numeric_prerelease_identifiers() {
+    assert_invalid_semver("1.2.3-01");
+    assert_invalid_semver("1.2.3-alpha.01");
+}
+
+#[test]
+fn test_try_parse_accepts_canonical_build_numeric_leading_zero() {
+    let v = semver.parse("1.2.3-rc.1+build.001");
+    testing.assert_eq_str(v.to_string(), "1.2.3-rc.1+build.001");
+}
+
+// ── caret bounds and increment helpers ────────────────────────────────
+
+#[test]
+fn test_matches_caret_zero_minor_stops_before_next_minor() {
+    testing.assert_true(semver.parse("0.2.3").matches("^0.2.3"));
+    testing.assert_true(semver.parse("0.2.99").matches("^0.2.3"));
+    testing.assert_false(semver.parse("0.3.0").matches("^0.2.3"));
+}
+
+#[test]
+fn test_matches_caret_zero_zero_stops_before_next_patch() {
+    testing.assert_true(semver.parse("0.0.3").matches("^0.0.3"));
+    testing.assert_false(semver.parse("0.0.4").matches("^0.0.3"));
+}
+
+#[test]
+fn test_increment_helpers_reset_lower_components_and_metadata() {
+    let v = semver.parse("1.2.3-rc.1+build.5");
+    testing.assert_eq_str(semver.increment_major(v).to_string(), "2.0.0");
+    testing.assert_eq_str(semver.increment_minor(v).to_string(), "1.3.0");
+    testing.assert_eq_str(semver.increment_patch(v).to_string(), "1.2.4");
+}
