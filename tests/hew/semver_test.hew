@@ -284,6 +284,7 @@ fn test_try_parse_rejects_empty_pre_release_and_build_identifiers() {
 fn test_try_parse_rejects_non_ascii_identifiers() {
     assert_invalid_semver("1.2.3-café");
     assert_invalid_semver("1.2.3+naïve");
+    assert_invalid_semver("1.2.3+build_meta");
 }
 
 #[test]
