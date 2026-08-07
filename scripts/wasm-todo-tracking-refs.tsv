@@ -1,0 +1,32 @@
+# wasm-todo-tracking-refs.tsv
+#
+# The set of issue references a WASM-TODO marker is permitted to cite.
+#
+# scripts/lint-wasm-todo-issue-ref.sh checks marker SYNTAX (the `(#NNN)` form).
+# That is not enough on its own: a marker pointing at a closed issue -- or at a
+# merged PR number, which is not a tracking artifact at all -- satisfies the
+# syntax while tracking nothing. This file supplies the semantics the syntax
+# check cannot, without requiring network access in CI.
+#
+# Format: <issue>\t<state>\t<verified-UTC-date>\t<short description>
+#
+# Rules:
+#   - A marker citing a ref that is ABSENT from this file fails the lint.
+#   - A marker citing a ref recorded here as CLOSED fails the lint.
+#   - Only `open` rows permit a marker.
+#
+# Refreshing: re-verify each row's state against the tracker and update the
+# date column. A row's `open` claim is an assertion made by whoever last
+# verified it; it is evidence only as of that date. Staleness is bounded and
+# visible here rather than being silently assumed by a syntax-only gate.
+#
+# NOTE: this file is intentionally EMPTY of open rows. Every ref currently
+# cited in-tree (#1451, #1758, #1475, #2050) is dead -- see issue #2827. The
+# rows below record that finding so the lint reports the real backlog instead
+# of passing over it. Repointing those markers at live, specific issues is
+# tracked by #2827 and requires triage decisions this file cannot make.
+
+1451	closed	2026-08-07	WASM-TODO audit sweep umbrella; completed and closed
+1758	closed	2026-08-07	codegen: implement WASM generator output parity; closed
+1475	merged-pr	2026-08-07	not an issue: merged PR (std/net/websocket frame cap)
+2050	merged-pr	2026-08-07	not an issue: merged PR (Vec element methods under HIR/MIR)
