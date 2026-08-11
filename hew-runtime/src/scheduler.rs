@@ -816,11 +816,28 @@ const WORKER_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// Poll interval while waiting for a worker to finish.
 const WORKER_JOIN_POLL_INTERVAL: Duration = Duration::from_millis(2);
 
+/// Outcome of worker teardown, and the memory-safety contract that follows it.
+///
+/// `Abandoned` means at least one worker was still running at the deadline and
+/// was detached. That worker holds a `WorkerRuntimePtr` whose contract makes it
+/// valid *until join*; detaching retires that guarantee, so anything that frees
+/// runtime-owned state afterward races a live thread. Callers MUST NOT free the
+/// runtime, reset the session, or run actor cleanup on this outcome. Leave it to
+/// process exit, exactly as the non-converged drain path in `shutdown.rs` does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TeardownOutcome {
+    /// Every worker was joined. Post-join cleanup is safe.
+    Joined,
+    /// One or more workers were detached at the deadline. Post-join cleanup
+    /// would race them; skip it.
+    Abandoned,
+}
+
 fn teardown_workers(
     scheduler: Option<*const Scheduler>,
     handles: Option<Vec<Option<JoinHandle<()>>>>,
     take_scheduler: bool,
-) -> Option<Box<RuntimeInner>> {
+) -> (Option<Box<RuntimeInner>>, TeardownOutcome) {
     // Take a raw pointer (not `&'static Scheduler`): a reference argument is
     // strongly protected for the whole call, and the `take_scheduler` branch
     // below `Box::from_raw`-frees this same allocation. Freeing strongly-protected
@@ -869,8 +886,12 @@ fn teardown_workers(
             if remaining.is_zero() {
                 // Deliberately LEAK the handle rather than force-kill: the worker
                 // may still be touching scheduler-owned memory, and there is no
-                // safe way to interrupt it. Detaching is the fail-closed choice —
-                // it bounds shutdown without introducing a use-after-free.
+                // safe way to interrupt it.
+                //
+                // Detaching alone introduces no UB, but it DOES retire the
+                // `WorkerRuntimePtr` "valid until joined" contract, so the
+                // `Abandoned` outcome returned below is what keeps callers from
+                // freeing runtime state under the still-live thread.
                 abandoned += 1;
                 std::mem::forget(h);
                 break;
@@ -885,6 +906,19 @@ fn teardown_workers(
              blocking syscall)"
         );
     }
+    let outcome = if abandoned > 0 {
+        TeardownOutcome::Abandoned
+    } else {
+        TeardownOutcome::Joined
+    };
+
+    // A detached worker can still reach scheduler-owned state. Retiring its
+    // queue references, and then freeing the runtime below, is exactly the
+    // race `shutdown.rs` avoids by skipping cleanup on a non-converged drain.
+    // Return early with the runtime INTACT and let process exit reclaim it.
+    if outcome == TeardownOutcome::Abandoned {
+        return (None, outcome);
+    }
 
     // No joined worker can consume the global injector now. Retire its
     // allocation references before actor cleanup; otherwise a terminal actor
@@ -895,25 +929,29 @@ fn teardown_workers(
     }
 
     if !take_scheduler {
-        return None;
+        return (None, outcome);
     }
 
     // Detach the owning runtime from its slot. Worker teardown above ensures no
     // thread can still access it; the caller drops the runtime last so the
     // scheduler's deques/parkers/stealers free as the final step.
-    runtime::take_default()
+    (runtime::take_default(), outcome)
 }
 
 /// Clean up after a worker spawn failure during initialisation.
 ///
 /// Signals shutdown, joins all successfully-spawned workers, then detaches and
-/// drops the default runtime (freeing its scheduler).
+/// drops the default runtime (freeing its scheduler). If a worker had to be
+/// detached, `teardown_workers` returns the runtime intact and this drops
+/// nothing: freeing the scheduler under a live worker is the UAF the
+/// `Abandoned` outcome exists to prevent.
 fn teardown_after_spawn_failure(handles: Vec<Option<JoinHandle<()>>>) {
-    drop(teardown_workers(
+    let (runtime, _outcome) = teardown_workers(
         get_scheduler().map(|s| s as *const Scheduler),
         Some(handles),
         true,
-    ));
+    );
+    drop(runtime);
 }
 
 /// Gracefully shut down the scheduler.
@@ -923,13 +961,19 @@ fn teardown_after_spawn_failure(handles: Vec<Option<JoinHandle<()>>>) {
 /// worker that has not exited by the deadline is detached rather than joined,
 /// so shutdown always terminates. Safe to call if the scheduler was never
 /// initialized.
+///
+/// When a worker is detached, post-join cleanup is SKIPPED. A detached worker
+/// is still executing against runtime-owned state, so `session_reset` (and the
+/// `hew_runtime_cleanup_after_main` that follows in compiled programs) would
+/// race it. This mirrors the non-converged drain path in `shutdown.rs`: mark
+/// shutdown done, free nothing, and let process exit reclaim the memory.
 #[no_mangle]
 pub extern "C" fn hew_sched_shutdown() {
     let Some(sched) = get_scheduler() else {
         return;
     };
 
-    teardown_workers(Some(sched as *const Scheduler), None, false);
+    let (_runtime, outcome) = teardown_workers(Some(sched as *const Scheduler), None, false);
 
     // Write profile files on exit if HEW_PROF_OUTPUT is set.  Must run BEFORE
     // session_reset() so that the dispatch-type registry is still populated
@@ -937,6 +981,12 @@ pub extern "C" fn hew_sched_shutdown() {
     // session_reset() ran first it would clear DISPATCH_TYPE_REGISTRY and
     // every actor would fall back to "Actor" in the snapshot.
     crate::profiler::maybe_write_on_exit();
+
+    if outcome == TeardownOutcome::Abandoned {
+        // A detached worker can still run session hooks' data underneath us.
+        // Returning here leaves every allocation to process exit.
+        return;
+    }
 
     // Fire all registered session reset hooks (tracing clear, profiler
     // dispatch-registry clear) after the exit profile has been written.
@@ -991,7 +1041,17 @@ pub extern "C" fn hew_runtime_cleanup() {
     // (the live-actor registry, deferred-teardown join handles), so the runtime
     // must stay installed in its slot until the sweep completes. Detaching it
     // here would make `rt_current()` trap mid-cleanup.
-    teardown_workers(get_scheduler().map(|s| s as *const Scheduler), None, false);
+    let (_runtime, outcome) =
+        teardown_workers(get_scheduler().map(|s| s as *const Scheduler), None, false);
+
+    // A worker was detached at the join deadline and is still executing against
+    // the very state this function frees: the live-actor registry, supervisor
+    // roots, the periodic timer wheel, the scheduler itself. Sweeping now is a
+    // use-after-free, so return and let process exit reclaim everything (the
+    // same trade `shutdown.rs` makes on a non-converged drain).
+    if outcome == TeardownOutcome::Abandoned {
+        return;
+    }
 
     // A handler-initiated supervisor stop may have deferred ownership to a
     // teardown thread. Once scheduler shutdown begins, that thread returns the
@@ -4582,13 +4642,18 @@ mod tests {
         });
 
         let start = Instant::now();
-        teardown_workers(None, Some(vec![Some(h)]), false);
+        let (_rt, outcome) = teardown_workers(None, Some(vec![Some(h)]), false);
         let elapsed = start.elapsed();
 
         // Joined means the worker's write is visible on return.
         assert!(
             done.load(Ordering::SeqCst),
             "a normally-exiting worker must be joined, not abandoned"
+        );
+        assert_eq!(
+            outcome,
+            TeardownOutcome::Joined,
+            "joined workers must report Joined so callers run post-join cleanup"
         );
         assert!(
             elapsed < WORKER_JOIN_TIMEOUT,
@@ -4612,7 +4677,7 @@ mod tests {
         });
 
         let start = Instant::now();
-        teardown_workers(None, Some(vec![Some(h)]), false);
+        let (runtime, outcome) = teardown_workers(None, Some(vec![Some(h)]), false);
         let elapsed = start.elapsed();
 
         assert!(
@@ -4623,6 +4688,18 @@ mod tests {
         assert!(
             elapsed < WORKER_JOIN_TIMEOUT * 3,
             "teardown must be bounded near the deadline, took {elapsed:?}"
+        );
+        // The bound alone is not enough: a detached worker is still running
+        // against runtime-owned state, so teardown must SAY so and must not
+        // hand back a runtime for the caller to free.
+        assert_eq!(
+            outcome,
+            TeardownOutcome::Abandoned,
+            "a detached worker must report Abandoned so callers skip cleanup"
+        );
+        assert!(
+            runtime.is_none(),
+            "teardown must not surrender the runtime while a worker is live"
         );
 
         // Let the detached thread go so it does not outlive the test run.
@@ -4646,9 +4723,14 @@ mod tests {
             .collect();
 
         let start = Instant::now();
-        teardown_workers(None, Some(handles), false);
+        let (_rt, outcome) = teardown_workers(None, Some(handles), false);
         let elapsed = start.elapsed();
 
+        assert_eq!(
+            outcome,
+            TeardownOutcome::Abandoned,
+            "stuck workers must report Abandoned"
+        );
         assert!(
             elapsed < WORKER_JOIN_TIMEOUT * 2,
             "3 stuck workers must share one deadline, not multiply it: took {elapsed:?}"
