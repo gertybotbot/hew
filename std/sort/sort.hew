@@ -29,6 +29,8 @@ fn copy_ints(v: Vec<i64>) -> Vec<i64> {
 }
 
 fn copy_strings(v: Vec<string>) -> Vec<string> {
+    // Sorting mutates the returned vector, so this eager copy must diverge
+    // from the caller's still-live input before the first in-place write.
     v.clone()
 }
 
