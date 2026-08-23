@@ -135,7 +135,7 @@ fn test_try_run_argv_missing_command_preserves_real_error() {
 fn test_child_drop_reaps_running_process() {
     let pid_path = f"tests/hew/_process_drop_{datetime.now_nanos()}.pid";
     cleanup_file(pid_path);
-    let pid = spawn_child_for_implicit_drop(clone pid_path);
+    let pid = spawn_child_for_implicit_drop(pid_path);
     var attempts = 0;
     var reaped = false;
     while attempts < 50 {

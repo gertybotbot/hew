@@ -24,6 +24,6 @@ fn test_log_level_and_format_use_int_surface() {
 fn test_password_hash_custom_accepts_int_cost() {
     let cost: i64 = 2;
     let hash = password.hash_custom("numeric-ergonomics", cost);
-    testing.assert_true(password.verify("numeric-ergonomics", hash.clone()));
+    testing.assert_true(password.verify("numeric-ergonomics", hash));
     testing.assert_false(password.verify("numeric-ergonomics-miss", hash));
 }

@@ -208,7 +208,7 @@ actor ClientHandler {
     var buf: bytes;
     var registered: bool;
     receive fn register(reader: LocalPid<ClientReader>) {
-        let accepted = match await router.register_client(session_id.clone(), this) {
+        let accepted = match await router.register_client(session_id, this) {
             .Ok(value) => value,
             .Err(_) => false,
         };
@@ -282,7 +282,10 @@ actor ClientHandler {
                                 connected = false;
                             } else {
                                 let new_client_id = read_mqtt_str(buf, payload_off);
-                                let claim_status = match await router.claim_client_id(session_id.clone(), new_client_id.clone()) {
+                                // Keep this explicit clone while reusing the value after an
+                                // awaited send; the inferred snapshot path currently leaves an
+                                // unmatched retain in checked MIR.
+                                let claim_status = match await router.claim_client_id(session_id, new_client_id.clone()) {
                                     .Ok(value) => {
                                         if value {
                                             1
@@ -366,7 +369,7 @@ actor ClientHandler {
                                 // matching only; reject filters it cannot honor.
                                 return_codes.push(0x80 as u8);
                             } else {
-                                router.subscribe(stopic, session_id.clone(), req_qos);
+                                router.subscribe(stopic, session_id, req_qos);
                                 return_codes.push(req_qos as u8);
                             }
                             topic_off = topic_off + tw + 1;
@@ -394,7 +397,7 @@ actor ClientHandler {
                                 break;
                             }
                             let utopic = read_mqtt_str(buf, topic_off);
-                            router.unsubscribe(utopic, session_id.clone());
+                            router.unsubscribe(utopic, session_id);
                             topic_off = topic_off + tw;
                         }
                         if connected {
@@ -438,7 +441,7 @@ actor ClientHandler {
         }
         if !connected {
             if registered {
-                router.client_disconnect(session_id.clone());
+                router.client_disconnect(session_id);
                 registered = false;
             }
             println(f"[mqtt] connection closed for {client_id}");
@@ -453,7 +456,7 @@ actor ClientHandler {
     }
     receive fn on_close() {
         if registered {
-            router.client_disconnect(session_id.clone());
+            router.client_disconnect(session_id);
             registered = false;
             println(f"[mqtt] connection closed for {client_id}");
         }
@@ -642,7 +645,7 @@ actor Acceptor {
             let conn = await lst.accept();
             let cid = f"client-{next_id}";
             let (input, sink) = conn.into_stream_sink();
-            let handler = spawn ClientHandler(sink: sink, session_id: cid.clone(), client_id: cid.clone(), router: router, buf: bytes.new(), registered: false);
+            let handler = spawn ClientHandler(sink: sink, session_id: cid, client_id: cid, router: router, buf: bytes.new(), registered: false);
             let reader = spawn ClientReader(input: input, client: handler);
             handler.register(reader);
             next_id = next_id + 1;

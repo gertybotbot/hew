@@ -56,7 +56,7 @@ actor ClientHandler {
         while running {
             let data = conn.read_string();
             if data.contains("__HEW_TCP_DISCONNECT__") {
-                room.unregister(name.clone());
+                room.unregister(name);
                 // The connection belongs to this actor's lifetime, not to this
                 // handler: `deliver` stays reachable for as long as the actor
                 // lives, and a broadcast already in flight when the client
@@ -65,9 +65,9 @@ actor ClientHandler {
                 // once, after the last message that could touch it.
                 running = false;
             } else {
-                let line = f"{name.clone()}: {data}";
+                let line = f"{name}: {data}";
                 println(line);
-                room.broadcast(name.clone(), line);
+                room.broadcast(name, line);
             }
         }
     }

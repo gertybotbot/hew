@@ -19,5 +19,5 @@ fn main() {
     println("123".is_digit());
     println("abc".is_alpha());
     println("abc123".is_alphanumeric());
-    println(s.clone());
+    println(s);
 }
